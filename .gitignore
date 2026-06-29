@@ -1,0 +1,24 @@
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store
+
+# Editor / IDE local settings
+.vscode/
+.idea/
+
+# Logs & temp
+*.log
+*.tmp
+
+# Local env / secrets — never commit these
+.env
+.env.*
+!.env.example

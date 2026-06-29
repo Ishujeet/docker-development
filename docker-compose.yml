@@ -1,0 +1,39 @@
+services:
+  dev:
+    build:
+      context: .
+      args:
+        # Match these to your host user so files created in mounted folders
+        # are owned by you, not root. Find yours with: id -u  /  id -g
+        USERNAME: dev
+        USER_UID: "1000"
+        USER_GID: "1000"
+    image: brew-dev:latest
+    container_name: brew-dev
+    working_dir: /workspace
+    # Keep the container alive so you can `exec` a shell into it whenever.
+    command: sleep infinity
+    tty: true
+    stdin_open: true
+    # Lightweight hardening: stop processes from gaining extra privileges.
+    security_opt:
+      - "no-new-privileges:true"
+    volumes:
+      # Your project / local folders. Edit the left side to point at whatever you want.
+      # Tip: share only the folder you're working in, not your whole home directory.
+      - ./:/workspace
+      # - /absolute/path/on/host:/workspace/another-folder
+
+      # Editable + persistent zsh config: edit ./zshrc on your host, it shows up here.
+      - ./zshrc:/home/dev/.zshrc
+
+      # Persist auth/config across container rebuilds.
+      # NOTE: the right-hand paths assume USERNAME=dev above. Change if you change USERNAME.
+      - claude-config:/home/dev/.claude
+      - azure-config:/home/dev/.azure
+      - kube-config:/home/dev/.kube
+
+volumes:
+  claude-config:
+  azure-config:
+  kube-config:
