@@ -8,6 +8,12 @@ services:
         USERNAME: dev
         USER_UID: "1000"
         USER_GID: "1000"
+        # Pinned tool versions -- bump to upgrade. Keeping them explicit here means
+        # a rebuild only re-runs the layer whose version changed (see Dockerfile).
+        PYTHON_FORMULA: "python@3.12"
+        NODE_VERSION: "22"
+        OHMYZSH_REF: "master"     # pin to a commit SHA for full reproducibility
+        CLAUDE_VERSION: "stable"  # or "latest" / an exact "X.Y.Z"
     image: brew-dev:latest
     container_name: brew-dev
     working_dir: /workspace

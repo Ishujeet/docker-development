@@ -5,13 +5,35 @@
 #        claude-code, zsh + oh-my-zsh
 # Package manager of choice: Homebrew (Linuxbrew). You can `brew install` anything new at runtime.
 #
+# Cacheability notes:
+#  * Steps are ordered stable -> volatile so a change low in the file doesn't
+#    bust the expensive layers above it.
+#  * The one big `brew install` is split so tweaking one tool doesn't rebuild the
+#    rest (azure-cli alone is ~1GB and almost never changes).
+#  * BuildKit cache mounts keep the apt + Homebrew download caches between builds,
+#    so even a rebuilt layer reuses what it already downloaded. Requires BuildKit
+#    (default in modern Docker / `docker buildx`).
+#  * Tool versions are pinned via the ARGs below -- bump one line to re-pin.
+#
+# Pin the base image by digest for full reproducibility, e.g.:
+#   FROM ubuntu:24.04@sha256:<digest>
 FROM ubuntu:24.04
 
-# Username / IDs are build args so file ownership on mounted volumes matches your host user.
+# --- Identity (build args so file ownership on mounted volumes matches your host user) ---
 # On your host run `id -u` / `id -g` and pass them in (defaults to 1000/1000).
 ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
+
+# --- Pinned tool versions (bump these to upgrade; keep them explicit for reproducible builds) ---
+# NOTE: Homebrew's core tap only serves the *latest* bottle of unversioned formulae
+# (helm, kubernetes-cli, azure-cli, uv, nvm, zsh). We pin what brew lets us pin
+# (python via a versioned formula) and pin the curl|bash installers by ref/version.
+# Combined with HOMEBREW_NO_AUTO_UPDATE, builds stay stable between rebuilds.
+ARG PYTHON_FORMULA=python@3.12
+ARG NODE_VERSION=22
+ARG OHMYZSH_REF=master
+ARG CLAUDE_VERSION=stable
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -24,7 +46,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 # apt still GPG-verifies the signed Release files, so package integrity is
 # guaranteed independently of the transport. Once ca-certificates is installed
 # below, every later https call (Homebrew, curl, …) verifies normally.
-RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
+#
+# The two cache mounts keep the downloaded .deb archives + package lists across
+# builds. We drop the default `docker-clean` hook (it purges the archive cache)
+# and skip `apt-get clean` for the same reason -- the cache mount, not the image,
+# holds them, so nothing bloats the final image.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get -o Acquire::https::Verify-Peer=false update \
     && apt-get -o Acquire::https::Verify-Peer=false install -y --no-install-recommends \
         build-essential \
@@ -38,9 +68,7 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
         unzip \
         xz-utils \
         tar \
-    && locale-gen en_US.UTF-8 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && locale-gen en_US.UTF-8
 
 ENV LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
@@ -64,39 +92,63 @@ WORKDIR /home/${USERNAME}
 RUN NONINTERACTIVE=1 /bin/bash -c \
     "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# Put brew (and user-local bins) on PATH for all subsequent build steps.
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/${USERNAME}/.local/bin:${PATH}"
+# Put brew (and user-local bins) on PATH for all subsequent build steps, and turn
+# off the auto-update that otherwise re-clones the tap on every `brew install`
+# (slow + non-deterministic). HOMEBREW_CACHE points brew's downloads at a stable
+# path we cache-mount below.
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/${USERNAME}/.local/bin:${PATH}" \
+    HOMEBREW_NO_AUTO_UPDATE=1 \
+    HOMEBREW_NO_ANALYTICS=1 \
+    HOMEBREW_NO_ENV_HINTS=1 \
+    HOMEBREW_CACHE=/home/${USERNAME}/.cache/Homebrew
 
-# --- Install the requested tools via Homebrew ---
-# kubernetes-cli provides the `kubectl` binary; azure-cli provides `az`.
-RUN brew update && brew install \
-        git \
-        helm \
-        kubernetes-cli \
-        azure-cli \
-        python \
-        uv \
-        nvm \
-        zsh
+# --- Install the requested tools via Homebrew, split by change frequency ---
+# Each `brew install` gets the Homebrew cache mount so re-downloads are avoided.
+# NOTE: BuildKit cache-mount options cannot expand build ARGs, so the target path
+# and uid/gid are hard-coded to the defaults (USERNAME=dev, UID/GID=1000). If you
+# override those ARGs the cache simply won't be reused -- the build still works.
+#
+# kubernetes-cli provides `kubectl`; azure-cli provides `az`.
 
-# Friendly `python` / `pip` shims (Homebrew exposes python3/pip3).
+# Small, stable CLIs -- rarely change, keep them high so they stay cached.
+RUN --mount=type=cache,target=/home/dev/.cache/Homebrew,uid=1000,gid=1000 \
+    brew install git helm kubernetes-cli zsh
+
+# azure-cli is huge (~1GB) and changes rarely -- isolate it so nothing else
+# forces it to reinstall.
+RUN --mount=type=cache,target=/home/dev/.cache/Homebrew,uid=1000,gid=1000 \
+    brew install azure-cli
+
+# Python toolchain (pinned formula) + uv.
+RUN --mount=type=cache,target=/home/dev/.cache/Homebrew,uid=1000,gid=1000 \
+    brew install ${PYTHON_FORMULA} uv
+
+# nvm (Node itself is installed via nvm below).
+RUN --mount=type=cache,target=/home/dev/.cache/Homebrew,uid=1000,gid=1000 \
+    brew install nvm
+
+# Friendly `python` / `pip` shims (the versioned formula is keg-only, so expose
+# it on PATH via ~/.local/bin). Uses the generic python3/pip3 names so bumping
+# PYTHON_FORMULA doesn't require editing these paths.
 RUN mkdir -p "$HOME/.local/bin" \
- && ln -sf "$(brew --prefix python)/bin/python3" "$HOME/.local/bin/python" \
- && ln -sf "$(brew --prefix python)/bin/pip3" "$HOME/.local/bin/pip"
+ && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/python3" "$HOME/.local/bin/python" \
+ && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/python3" "$HOME/.local/bin/python3" \
+ && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/pip3"    "$HOME/.local/bin/pip" \
+ && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/pip3"    "$HOME/.local/bin/pip3"
 
-# --- Node via nvm (installs the latest current Node + npm, set as default) ---
+# --- Node via nvm (pinned to NODE_VERSION, set as default) ---
 ENV NVM_DIR="/home/${USERNAME}/.nvm"
 RUN mkdir -p "$NVM_DIR" \
  && bash -c 'source "$(brew --prefix nvm)/nvm.sh" \
-        && nvm install node \
-        && nvm alias default node \
+        && nvm install '"${NODE_VERSION}"' \
+        && nvm alias default '"${NODE_VERSION}"' \
         && nvm use default'
 
-# --- Claude Code (native installer: Anthropic's recommended method, no Node dependency) ---
-RUN curl -fsSL https://claude.ai/install.sh | bash
-
-# --- oh-my-zsh (unattended: no chsh, no auto-launch during build) ---
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+# --- oh-my-zsh (pinned to OHMYZSH_REF; clone directly so we can check out a ref) ---
+# We ship our own .zshrc below, so we only need the framework on disk -- no need
+# for the installer's chsh/auto-launch behaviour.
+RUN git clone https://github.com/ohmyzsh/ohmyzsh.git "$HOME/.oh-my-zsh" \
+ && git -C "$HOME/.oh-my-zsh" checkout ${OHMYZSH_REF}
 
 # --- Persistent config dirs (so volume mounts get the right owner) ---
 RUN mkdir -p "$HOME/.claude" "$HOME/.config" "$HOME/.azure" "$HOME/.kube"
@@ -135,6 +187,11 @@ RUN { \
 RUN echo /home/linuxbrew/.linuxbrew/bin/zsh | sudo tee -a /etc/shells >/dev/null \
  && sudo usermod -s /home/linuxbrew/.linuxbrew/bin/zsh ${USERNAME}
 
+# --- Claude Code (native installer: Anthropic's recommended method, no Node dependency) ---
+# Placed last of the installs: Claude Code updates frequently, so re-pinning
+# CLAUDE_VERSION rebuilds only this layer (+ the sanity check), nothing expensive.
+RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}"
+
 # --- Build-time sanity check (fails the build early if a tool is missing) ---
 RUN bash -c 'set -e; \
     export NVM_DIR="$HOME/.nvm"; source "$(brew --prefix nvm)/nvm.sh"; nvm use default >/dev/null 2>&1; \
@@ -144,7 +201,7 @@ RUN bash -c 'set -e; \
     helm version --short; \
     kubectl version --client 2>/dev/null | head -n1 || true; \
     command -v az >/dev/null && echo "az: $(command -v az)"; \
-    python3 --version; pip3 --version | head -n1; uv --version; \
+    python --version; pip --version | head -n1; uv --version; \
     node --version; npm --version; \
     zsh --version; \
     (command -v claude >/dev/null && claude --version 2>/dev/null) || echo "claude: installed"'
