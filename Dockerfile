@@ -148,13 +148,19 @@ RUN --mount=type=cache,target=/home/dev/.cache/Homebrew,uid=1000,gid=1000 \
     brew install nvm
 
 # Friendly `python` / `pip` shims (the versioned formula is keg-only, so expose
-# it on PATH via ~/.local/bin). Uses the generic python3/pip3 names so bumping
-# PYTHON_FORMULA doesn't require editing these paths.
-RUN mkdir -p "$HOME/.local/bin" \
- && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/python3" "$HOME/.local/bin/python" \
- && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/python3" "$HOME/.local/bin/python3" \
- && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/pip3"    "$HOME/.local/bin/pip" \
- && ln -sf "$(brew --prefix ${PYTHON_FORMULA})/bin/pip3"    "$HOME/.local/bin/pip3"
+# it on PATH via ~/.local/bin). We link from the keg's `libexec/bin`, not `bin`:
+# a keg-only python@3.x ships only versioned names (python3.12, pip3.12) in
+# `bin`, and keeps the unversioned/major-versioned links (python, python3, pip,
+# pip3) in `libexec/bin`. `libexec/bin` exists for every python formula, so this
+# survives bumping PYTHON_FORMULA. `ln -sf` happily creates dangling links, so
+# the trailing checks fail this layer instead of the sanity check far below.
+RUN PYBIN="$(brew --prefix ${PYTHON_FORMULA})/libexec/bin" \
+ && mkdir -p "$HOME/.local/bin" \
+ && ln -sf "$PYBIN/python" "$HOME/.local/bin/python" \
+ && ln -sf "$PYBIN/python3" "$HOME/.local/bin/python3" \
+ && ln -sf "$PYBIN/pip"    "$HOME/.local/bin/pip" \
+ && ln -sf "$PYBIN/pip3"   "$HOME/.local/bin/pip3" \
+ && python --version && pip --version
 
 # --- Node via nvm (pinned to NODE_VERSION, set as default) ---
 ENV NVM_DIR="/home/${USERNAME}/.nvm"
