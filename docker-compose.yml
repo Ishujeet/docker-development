@@ -14,6 +14,7 @@ services:
         NODE_VERSION: "22"
         OHMYZSH_REF: "master"     # pin to a commit SHA for full reproducibility
         CLAUDE_VERSION: "stable"  # or "latest" / an exact "X.Y.Z"
+        PLAYWRIGHT_VERSION: "latest"  # pin to an exact "X.Y.Z" to lock the Chromium build
     image: brew-dev:latest
     container_name: brew-dev
     working_dir: /workspace
@@ -39,7 +40,13 @@ services:
       - azure-config:/home/dev/.azure
       - kube-config:/home/dev/.kube
 
+      # Persist the Playwright-managed Chromium across rebuilds. A fresh (empty)
+      # named volume is seeded from the browser baked into the image at build
+      # time, so the first `up` already has it; later rebuilds reuse the volume.
+      - ms-playwright:/home/dev/.cache/ms-playwright
+
 volumes:
   claude-config:
   azure-config:
   kube-config:
+  ms-playwright:

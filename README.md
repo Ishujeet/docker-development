@@ -4,7 +4,7 @@ A portable Linux development environment in a container, with everything install
 
 The headline feature: a single `code <folder>` command that opens **VSCode running *inside* a per-folder container** — so every project gets its own isolated environment automatically, and you never install language tools on your laptop again.
 
-**Pre-installed:** `git`, `helm`, `kubectl`, `az` (Azure CLI), `node` + `nvm`, `python` (latest) + `pip`, `uv`, `claude` (Claude Code), and `zsh` with oh-my-zsh. Add anything else with `brew install`.
+**Pre-installed:** `git`, `helm`, `kubectl`, `az` (Azure CLI), `node` + `nvm`, `python` (latest) + `pip`, `uv`, `claude` (Claude Code), **Playwright + Chromium** (with its system libraries), and `zsh` with oh-my-zsh. Add anything else with `brew install`.
 
 ---
 
@@ -214,6 +214,7 @@ Persistence:
   ```
   (To force a global install: `pip install --break-system-packages <pkg>`.)
 - **az / kubectl** — `az login` and kube contexts persist via their named volumes.
+- **Playwright / Chromium** — the Chromium browser is baked into the image (`PLAYWRIGHT_VERSION` build arg, defaults to `latest`) along with the ~20 system libraries it links against, which only `apt` can provide (Homebrew on Linux can't). A `ms-playwright` named volume mounted at `~/.cache/ms-playwright` is seeded from the baked-in browser on first `up` and persists it across rebuilds. Use it via `npx playwright ...` or the `@playwright/mcp` MCP server. If you later bump `PLAYWRIGHT_VERSION`, the existing volume won't auto-update (Docker only seeds an *empty* volume) — run `npx playwright install chromium` once in the container, or `docker volume rm` the `ms-playwright` volume to reseed.
 
 ---
 

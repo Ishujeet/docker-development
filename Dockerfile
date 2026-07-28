@@ -34,6 +34,7 @@ ARG PYTHON_FORMULA=python@3.12
 ARG NODE_VERSION=22
 ARG OHMYZSH_REF=master
 ARG CLAUDE_VERSION=stable
+ARG PLAYWRIGHT_VERSION=latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -73,6 +74,25 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 ENV LANG=en_US.UTF-8 \
     LANGUAGE=en_US:en \
     LC_ALL=en_US.UTF-8
+
+# --- Chromium/Playwright system libraries ---
+# The Playwright-managed Chromium binary downloads fine at runtime (into
+# ~/.cache/ms-playwright, no root needed), but it dynamically links ~20 shared
+# libraries that only apt provides -- Homebrew on Linux can't supply them for
+# Chromium. We bake them in here so `npx playwright ...` works in the running
+# container without sudo (which is fine to use at build time, but blocked at run).
+#
+# Package names are the Ubuntu 24.04 (noble) set: several libs moved to the
+# time_t-64bit `...t64` names on this release. This is the equivalent of
+# `playwright install-deps chromium`, done via apt because root has no node here
+# (node lives under nvm for the `dev` user only). Same apt cache-mounts as above.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libglib2.0-0t64 libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+        libdbus-1-3 libcups2t64 libxcb1 libxkbcommon0 libasound2t64 libgbm1 \
+        libx11-6 libxext6 libcairo2 libpango-1.0-0 libxcomposite1 libxdamage1 \
+        libxfixes3 libxrandr2 libexpat1 libatspi2.0-0t64
 
 # --- Create a non-root user with passwordless sudo ---
 # Ubuntu 24.04 ships a default `ubuntu` user at UID 1000; remove it to free the UID.
@@ -191,6 +211,17 @@ RUN echo /home/linuxbrew/.linuxbrew/bin/zsh | sudo tee -a /etc/shells >/dev/null
 # Placed last of the installs: Claude Code updates frequently, so re-pinning
 # CLAUDE_VERSION rebuilds only this layer (+ the sanity check), nothing expensive.
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}"
+
+# --- Playwright Chromium browser (baked in so it survives rebuilds) ---
+# Runs as the `dev` user so the binaries land in ~/.cache/ms-playwright, exactly
+# where Playwright looks at runtime. Node lives under nvm, so we source it first.
+# The system libs Chromium links against were installed near the top of this file.
+# Placed late (Playwright releases often, like Claude Code) so re-pinning
+# PLAYWRIGHT_VERSION only rebuilds this cheap layer. A named volume mounted at
+# this cache path in docker-compose is seeded from these baked-in binaries on the
+# first `up`, then persists them across future rebuilds.
+RUN bash -c 'export NVM_DIR="$HOME/.nvm"; source "$(brew --prefix nvm)/nvm.sh"; nvm use default >/dev/null 2>&1; \
+    npx --yes playwright@'"${PLAYWRIGHT_VERSION}"' install chromium'
 
 # --- Build-time sanity check (fails the build early if a tool is missing) ---
 RUN bash -c 'set -e; \
