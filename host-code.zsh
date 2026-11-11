@@ -29,6 +29,12 @@ unalias code 2>/dev/null
 export DEVCONTAINER_REPO="${DEVCONTAINER_REPO:-${${(%):-%x}:A:h}}"
 export DEVCONTAINER_IMAGE="${DEVCONTAINER_IMAGE:-brew-dev:latest}"
 
+# Optional, per-user Claude Code settings shared by ALL project containers
+# (e.g. a LiteLLM / org LLM endpoint). Lives on YOUR host, never in the repo.
+# If  $CLAUDE_DEV_SETTINGS_DIR/managed-settings.json  exists, the folder is
+# mounted read-only at /etc/claude-code in each NEW container; otherwise ignored.
+export CLAUDE_DEV_SETTINGS_DIR="${CLAUDE_DEV_SETTINGS_DIR:-$HOME/.config/claude-dev}"
+
 # Resolve the real VSCode `code` binary, ignoring this function and any alias.
 _dev_vscode_bin() {
   local bin
@@ -78,6 +84,13 @@ code() {
     fi
   else
     print "code: creating container $cname  ($target → /workspace)"
+    local -a extra_mounts=()
+    if [ -f "$CLAUDE_DEV_SETTINGS_DIR/managed-settings.json" ]; then
+      print "code: using Claude settings from $CLAUDE_DEV_SETTINGS_DIR"
+      # Mount the folder (not the file) so host edits show up live, even from
+      # editors that save by replacing the file.
+      extra_mounts+=(-v "$CLAUDE_DEV_SETTINGS_DIR:/etc/claude-code:ro")
+    fi
     docker run -d \
       --name "$cname" \
       --hostname "$(basename "$target")" \
@@ -87,6 +100,7 @@ code() {
       -v "claude-${cname}:/home/dev/.claude" \
       -v "azure-${cname}:/home/dev/.azure" \
       -v "kube-${cname}:/home/dev/.kube" \
+      "${extra_mounts[@]}" \
       "$DEVCONTAINER_IMAGE" sleep infinity >/dev/null || return 1
   fi
 

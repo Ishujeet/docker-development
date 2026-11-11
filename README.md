@@ -170,6 +170,34 @@ When VSCode is attached to a container, the **Claude Code extension runs inside 
 - **Auth is per-container** and persisted in a named volume, so you log in once per project and it survives stop/start (lost only on `devrm`/rebuild). To share one login across all projects instead, point the `claude-*` volume at a single shared volume name in `host-code.zsh`.
 - The `dev.containers.defaultExtensions` setting (see Option A) auto-installs the extension into every container, including the plain Compose/attach ones.
 
+### Optional: your own Claude Code settings in every container (e.g. an org LLM via LiteLLM)
+
+Each user can keep a personal settings file on **their own host**. It's never committed and it's optional. If it exists, the `code` launcher mounts it read-only into every project container. If it doesn't, nothing changes.
+
+```bash
+# on your HOST machine
+mkdir -p ~/.config/claude-dev
+$EDITOR ~/.config/claude-dev/managed-settings.json
+```
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://litellm.your-org.example",
+    "ANTHROPIC_AUTH_TOKEN": "sk-your-litellm-key",
+    "ANTHROPIC_MODEL": "your-model-alias",
+    "ANTHROPIC_SMALL_FAST_MODEL": "your-model-alias",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  }
+}
+```
+
+- The file appears in the container as `/etc/claude-code/managed-settings.json`. Claude Code (CLI and VS Code extension) reads that path automatically, and it takes precedence over user and project settings.
+- Run `chmod 600` on the file. To keep the key out of it, put a key file in the same folder and use `"apiKeyHelper": "cat /etc/claude-code/key"` in place of `ANTHROPIC_AUTH_TOKEN`.
+- Edits to the file show up immediately; restart the Claude session to pick them up. **Creating** the file for the first time only affects containers created afterwards. For an existing project, run `devrm` and then `code` again (your volumes are kept).
+- To use a different folder, `export CLAUDE_DEV_SETTINGS_DIR=/some/dir` before sourcing `host-code.zsh`.
+- To check it worked, run `/status` inside Claude Code. It should show your base URL and model.
+
 ---
 
 ## Customizing zsh
